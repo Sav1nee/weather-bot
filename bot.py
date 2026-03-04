@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("8754673046:AAGEXU1m6NwlYWnD7JTcQR6Y2N13cpgFozg")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -82,7 +82,7 @@ async def handle_city(message: types.Message):
 
     lat, lon = await get_coordinates(city)
     if not lat:
-        await message.answer("Місто не знайдено. Спробуй ще раз.")
+        await message.answer("Місто не знайдено. Спробуй іншу назву.")
         return
 
     weather = await get_weather(lat, lon)
