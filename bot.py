@@ -1,99 +1,87 @@
 import asyncio
 import os
-import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiohttp import web
 
-# --- ИНИЦИАЛИЗАЦИЯ ---
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Словарь для хранения данных (пока в памяти, позже подключим Supabase)
-users = {}
+# Хранилище (пока не подключили библиотеку supabase, используем память для теста кнопок)
+user_data = {}
 
-# Тексты
 STRINGS = {
     "ua": {
-        "welcome": "Вітаю! Я допоможу налаштувати твій ідеальний день.",
-        "choose_lang": "Оберіть мову:",
-        "main_menu": "Головне меню",
-        "settings": "⚙️ Мої Налаштування",
-        "check": "🌤 Перевірити погоду",
-        "help": "🆘 Підтримка",
-        "support_msg": "Напишіть ваше питання. Ми відповімо якнайшвидше."
+        "welcome": "🇺🇦 Вітаю у головному меню!",
+        "settings_menu": "⚙️ Що саме хочете налаштувати?",
+        "weather_check": "Напишіть назву міста для прогнозу:",
+        "support_contact": "Зв'язок з адміном: @YourUsername",
+        "btn_weather": "🌤 Перевірити погоду",
+        "btn_settings": "⚙️ Мої Налаштування",
+        "btn_help": "🆘 Підтримка"
     },
     "en": {
-        "welcome": "Welcome! I will help you set up your perfect day.",
-        "choose_lang": "Choose language:",
-        "main_menu": "Main Menu",
-        "settings": "⚙️ My Settings",
-        "check": "🌤 Check Weather",
-        "help": "🆘 Support",
-        "support_msg": "Write your question. We will get back to you soon."
+        "welcome": "🇬🇧 Welcome to the main menu!",
+        "settings_menu": "⚙️ What do you want to configure?",
+        "weather_check": "Type the city name for the forecast:",
+        "support_contact": "Contact admin: @YourUsername",
+        "btn_weather": "🌤 Check Weather",
+        "btn_settings": "⚙️ My Settings",
+        "btn_help": "🆘 Support"
     }
 }
 
-# --- СЕРВЕР ДЛЯ ЖИЗНЕСПОСОБНОСТИ (Render) ---
-async def handle(request):
-    return web.Response(text="Service is Active")
-
-async def start_webserver():
+# --- СЕРВЕР ---
+async def handle(request): return web.Response(text="OK")
+async def start_server():
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
+    await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000))).start()
 
-# --- ЛОГИКА БОТА ---
-
+# --- КНОПКИ ---
 @dp.message(Command("start"))
-async def start_cmd(message: types.Message):
-    # Создаем базовый профиль при регистрации
-    users[message.from_user.id] = {
-        "lang": "ua",
-        "city": None,
-        "temp_min": 15,
-        "wind_max": 10
-    }
-    
+async def cmd_start(message: types.Message):
+    user_data[message.from_user.id] = {"lang": "ua"} # По умолчанию
     builder = ReplyKeyboardBuilder()
-    builder.button(text="🇺🇦 Українська")
-    builder.button(text="🇬🇧 English")
-    await message.answer("🇺🇦 Оберіть мову / 🇬🇧 Choose language:", 
-                         reply_markup=builder.as_markup(resize_keyboard=True))
+    builder.button(text="🇺🇦 Українська"), builder.button(text="🇬🇧 English")
+    await message.answer("Оберіть мову / Choose language:", reply_markup=builder.as_markup(resize_keyboard=True))
 
 @dp.message(F.text.in_(["🇺🇦 Українська", "🇬🇧 English"]))
-async def select_lang(message: types.Message):
+async def set_lang(message: types.Message):
     lang = "ua" if "🇺🇦" in message.text else "en"
-    users[message.from_user.id]["lang"] = lang
-    
-    await main_menu(message)
+    user_data[message.from_user.id]["lang"] = lang
+    await show_main_menu(message)
 
-async def main_menu(message: types.Message):
-    lang = users[message.from_user.id]["lang"]
+async def show_main_menu(message: types.Message):
+    lang = user_data[message.from_user.id]["lang"]
     t = STRINGS[lang]
-    
     builder = ReplyKeyboardBuilder()
-    builder.button(text=t["check"])
-    builder.button(text=t["settings"])
-    builder.button(text=t["help"])
-    builder.adjust(2)
-    
+    builder.row(types.KeyboardButton(text=t["btn_weather"]))
+    builder.row(types.KeyboardButton(text=t["btn_settings"]), types.KeyboardButton(text=t["btn_help"]))
     await message.answer(t["welcome"], reply_markup=builder.as_markup(resize_keyboard=True))
 
-@dp.message(F.text.in_(["🆘 Support", "🆘 Підтримка"]))
-async def support(message: types.Message):
-    lang = users[message.from_user.id]["lang"]
-    await message.answer(STRINGS[lang]["support_msg"])
+# ОБРАБОТКА КНОПОК МЕНЮ
+@dp.message(F.text.in_(["🌤 Перевірити погоду", "🌤 Check Weather"]))
+async def weather_click(message: types.Message):
+    lang = user_data.get(message.from_user.id, {"lang":"en"})["lang"]
+    await message.answer(STRINGS[lang]["weather_check"])
 
-# --- ЗАПУСК ---
+@dp.message(F.text.in_(["⚙️ Мої Налаштування", "⚙️ My Settings"]))
+async def settings_click(message: types.Message):
+    lang = user_data.get(message.from_user.id, {"lang":"en"})["lang"]
+    await message.answer(STRINGS[lang]["settings_menu"])
+
+@dp.message(F.text.in_(["🆘 Підтримка", "🆘 Support"]))
+async def help_click(message: types.Message):
+    lang = user_data.get(message.from_user.id, {"lang":"en"})["lang"]
+    await message.answer(STRINGS[lang]["support_contact"])
+
 async def main():
-    await start_webserver()
+    await start_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
