@@ -1,98 +1,99 @@
 import asyncio
-import aiohttp
 import os
-from aiogram import Bot, Dispatcher, types
+import aiohttp
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiohttp import web  # Добавили для сервера
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiohttp import web
 
+# --- ИНИЦИАЛИЗАЦИЯ ---
 TOKEN = os.getenv("BOT_TOKEN")
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- Веб-сервер для Render ---
-async def handle(request):
-    return web.Response(text="Bot is running!")
+# Словарь для хранения данных (пока в памяти, позже подключим Supabase)
+users = {}
 
-async def start_server():
+# Тексты
+STRINGS = {
+    "ua": {
+        "welcome": "Вітаю! Я допоможу налаштувати твій ідеальний день.",
+        "choose_lang": "Оберіть мову:",
+        "main_menu": "Головне меню",
+        "settings": "⚙️ Мої Налаштування",
+        "check": "🌤 Перевірити погоду",
+        "help": "🆘 Підтримка",
+        "support_msg": "Напишіть ваше питання. Ми відповімо якнайшвидше."
+    },
+    "en": {
+        "welcome": "Welcome! I will help you set up your perfect day.",
+        "choose_lang": "Choose language:",
+        "main_menu": "Main Menu",
+        "settings": "⚙️ My Settings",
+        "check": "🌤 Check Weather",
+        "help": "🆘 Support",
+        "support_msg": "Write your question. We will get back to you soon."
+    }
+}
+
+# --- СЕРВЕР ДЛЯ ЖИЗНЕСПОСОБНОСТИ (Render) ---
+async def handle(request):
+    return web.Response(text="Service is Active")
+
+async def start_webserver():
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render сам подставит нужный порт в переменную PORT
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-# -----------------------------
 
-activities_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🚴 Велосипед")],
-        [KeyboardButton(text="🚶 Прогулянка")],
-        [KeyboardButton(text="🥾 Хайкінг")]
-    ],
-    resize_keyboard=True
-)
+# --- ЛОГИКА БОТА ---
 
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("Привіт! 🌤\n\nНапиши назву міста (наприклад: Gothenburg або Київ)")
-
-async def get_coordinates(city):
-    url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            data = await response.json()
-            if "results" in data:
-                return data["results"][0]["latitude"], data["results"][0]["longitude"]
-    return None, None
-
-async def get_weather(lat, lon):
-    url = (
-        f"https://api.open-meteo.com/v1/forecast?"
-        f"latitude={lat}&longitude={lon}"
-        f"&daily=temperature_2m_max,precipitation_sum,windspeed_10m_max"
-        f"&timezone=auto"
-    )
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            return await response.json()
-
-def calculate_score(temp, wind, rain, activity):
-    score = 100
-    if wind > 10: score -= 60
-    elif wind > 7: score -= 30
-    if rain > 2: score -= 40
-    if temp < 10 or temp > 28: score -= 20
-    return max(score, 0)
-
-@dp.message()
-async def handle_city(message: types.Message):
-    city = message.text
-    lat, lon = await get_coordinates(city)
-    if not lat:
-        await message.answer("Місто не знайдено. Спробуй іншу назву.")
-        return
-
-    weather = await get_weather(lat, lon)
-    daily = weather["daily"]
+async def start_cmd(message: types.Message):
+    # Создаем базовый профиль при регистрации
+    users[message.from_user.id] = {
+        "lang": "ua",
+        "city": None,
+        "temp_min": 15,
+        "wind_max": 10
+    }
     
-    response_text = f"📍 {city}\n\n"
-    for i in range(3):
-        score = calculate_score(daily["temperature_2m_max"][i], daily["windspeed_10m_max"][i], daily["precipitation_sum"][i], "🚴 Велосипед")
-        response_text += (
-            f"📅 {daily['time'][i]}\n"
-            f"Темп: {daily['temperature_2m_max'][i]}°C\n"
-            f"Оцінка: {score}/100\n\n"
-        )
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🇺🇦 Українська")
+    builder.button(text="🇬🇧 English")
+    await message.answer("🇺🇦 Оберіть мову / 🇬🇧 Choose language:", 
+                         reply_markup=builder.as_markup(resize_keyboard=True))
 
-    await message.answer(response_text)
-    await message.answer("Обери активність:", reply_markup=activities_keyboard)
+@dp.message(F.text.in_(["🇺🇦 Українська", "🇬🇧 English"]))
+async def select_lang(message: types.Message):
+    lang = "ua" if "🇺🇦" in message.text else "en"
+    users[message.from_user.id]["lang"] = lang
+    
+    await main_menu(message)
 
+async def main_menu(message: types.Message):
+    lang = users[message.from_user.id]["lang"]
+    t = STRINGS[lang]
+    
+    builder = ReplyKeyboardBuilder()
+    builder.button(text=t["check"])
+    builder.button(text=t["settings"])
+    builder.button(text=t["help"])
+    builder.adjust(2)
+    
+    await message.answer(t["welcome"], reply_markup=builder.as_markup(resize_keyboard=True))
+
+@dp.message(F.text.in_(["🆘 Support", "🆘 Підтримка"]))
+async def support(message: types.Message):
+    lang = users[message.from_user.id]["lang"]
+    await message.answer(STRINGS[lang]["support_msg"])
+
+# --- ЗАПУСК ---
 async def main():
-    # Запускаем сервер и бота одновременно
-    await start_server()
+    await start_webserver()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
