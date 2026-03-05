@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import aiohttp
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -32,22 +33,16 @@ async def get_user(user_id):
         return data
     return res.data[0]
 
-# --- Функция запроса погоды ---
-async def fetch_weather(city):
-    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={W_API_KEY}&units=metric&lang=ua"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                return None
-        except:
-            return None
+# --- Утилиты для ветра ---
+def get_wind_direction(deg):
+    directions = ['⬆️ Пн', '↗️ Пн-Сх', '➡️ Сх', '↘️ Пд-Сх', '⬇️ Пд', '↙️ Пд-Зх', '⬅️ Зх', '↖️ Пн-Зх']
+    index = int((deg + 22.5) / 45) % 8
+    return directions[index]
 
 # --- Клавиатуры ---
 def main_menu_kb(lang):
     kb = ReplyKeyboardBuilder()
-    text = "🌤 Погода" if lang == "ua" else "🌤 Weather"
+    text = "🌤 Прогноз на 3 дні" if lang == "ua" else "🌤 3-Day Forecast"
     set_text = "⚙️ Налаштування" if lang == "ua" else "⚙️ Settings"
     kb.row(types.KeyboardButton(text=text))
     kb.row(types.KeyboardButton(text=set_text), types.KeyboardButton(text="🆘 Support"))
@@ -64,89 +59,87 @@ async def cmd_start(message: types.Message):
 async def set_lang(message: types.Message):
     lang = "ua" if "🇺🇦" in message.text else "en"
     supabase.table("profiles").upsert({"id": message.from_user.id, "language": lang}).execute()
-    await message.answer("✅ Виконую...", reply_markup=main_menu_kb(lang))
+    await message.answer("✅ Налаштовано!", reply_markup=main_menu_kb(lang))
 
-# --- ЛОГИКА ПОГОДЫ (ТВОЯ СХЕМА) ---
-@dp.message(F.text.in_(["🌤 Погода", "🌤 Weather", "🌤 Перевірити погоду"]))
-async def show_weather(message: types.Message):
+# --- ЛОГИКА ПРОГНОЗА НА 3 ДНЯ ---
+@dp.message(F.text.in_(["🌤 Прогноз на 3 дні", "🌤 3-Day Forecast"]))
+async def show_forecast(message: types.Message):
     user = await get_user(message.from_user.id)
-    data = await fetch_weather(user['city'])
+    url = f"http://api.openweathermap.org/data/2.5/forecast?q={user['city']}&appid={W_API_KEY}&units=metric&lang=ua"
     
-    if not data:
-        await message.answer("❌ Місто не знайдено. Спробуйте написати назву латиницею в налаштуваннях (напр. Gothenburg).")
-        return
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                await message.answer("❌ Місто не знайдено. Перевірте назву в налаштуваннях.")
+                return
+            data = await resp.json()
 
-    w = data['weather'][0]['description'].capitalize()
-    temp = round(data['main']['temp'])
-    wind = data['wind']['speed']
-    hum = data['main']['humidity']
+    # Группируем данные: 3 дня, 3 временные точки (9:00, 15:00, 21:00)
+    forecast_text = f"<b>📅 Прогноз для {data['city']['name']}</b>\n"
+    current_date = ""
+    count_days = 0
     
-    # Сравнение с лимитами
-    bike_res = "✅ OK" if wind <= user['bike_wind_limit'] else "🛑 Сильний вітер"
-    hike_res = "✅ OK" if wind <= user['walk_wind_limit'] else "🛑 Сильний вітер"
+    # OpenWeather дает прогноз каждые 3 часа. Фильтруем нужные нам часы.
+    target_hours = ["09:00:00", "15:00:00", "21:00:00"]
+    
+    for item in data['list']:
+        dt_obj = datetime.strptime(item['dt_txt'], '%Y-%m-%d %H:%M:%S')
+        date_str = dt_obj.strftime('%d.%m')
+        time_str = dt_obj.strftime('%H:%M')
+        
+        if date_str != current_date:
+            if count_days >= 3: break
+            forecast_text += f"\n🔹 <b>{date_str}</b>\n"
+            current_date = date_str
+            count_days += 1
+            
+        if item['dt_txt'].split()[1] in target_hours:
+            temp = round(item['main']['temp'])
+            wind = item['wind']['speed']
+            direction = get_wind_direction(item['wind']['deg'])
+            
+            # Вердикт по ветру
+            status = "✅" if wind <= user['bike_wind_limit'] else "🛑"
+            
+            forecast_text += f"  {time_str} | {temp}°C | {wind}м/с {direction} {status}\n"
 
-    report = (
-        f"<b>📍 {data['name']} — {w}</b>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"🌡 Температура: <b>{temp}°C</b>\n"
-        f"💨 Вітер: <b>{wind} м/с</b>\n"
-        f"💧 Вологість: <b>{hum}%</b>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"🚲 <b>Вело:</b> {bike_res} (ліміт {user['bike_wind_limit']})\n"
-        f"🥾 <b>Хайкінг:</b> {hike_res} (ліміт {user['walk_wind_limit']})\n"
-    )
-    await message.answer(report, parse_mode="HTML")
+    forecast_text += f"\n<i>{status} — перевірка по ліміту вело ({user['bike_wind_limit']} м/с)</i>"
+    await message.answer(forecast_text, parse_mode="HTML")
 
-# --- НАСТРОЙКИ ---
+# --- НАСТРОЙКИ (ОСТАВЛЯЕМ БЕЗ ИЗМЕНЕНИЙ) ---
 @dp.message(F.text.in_(["⚙️ Налаштування", "⚙️ Settings"]))
 async def settings(message: types.Message):
     u = await get_user(message.from_user.id)
-    text = (
-        f"⚙️ <b>Параметри:</b>\n"
-        f"🏙 Місто: <code>{u['city']}</code>\n"
-        f"🚲 Вело-ліміт: <b>{u['bike_wind_limit']} м/с</b>\n"
-        f"🥾 Хайкінг-ліміт: <b>{u['walk_wind_limit']} м/с</b>"
-    )
+    text = (f"⚙️ <b>Параметри:</b>\n🏙 Місто: <code>{u['city']}</code>\n"
+            f"🚲 Вело: <b>{u['bike_wind_limit']} м/с</b>\n🥾 Хайкінг: <b>{u['walk_wind_limit']} м/с</b>")
     kb = InlineKeyboardBuilder()
     kb.button(text="🏙 Місто", callback_data="set_city")
     kb.button(text="🚲 Вело", callback_data="set_bike")
-    kb.button(text="🥾 Хайкінг", callback_data="set_hike")
     kb.adjust(1)
     await message.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "set_city")
 async def edit_city(call: types.CallbackQuery, state: FSMContext):
-    await state.set_state(Setup.city)
-    await call.message.answer("⌨️ Напишіть назву міста латиницею (напр. Stockholm):")
-    await call.answer()
+    await state.set_state(Setup.city); await call.message.answer("⌨️ Назва міста (English):"); await call.answer()
 
 @dp.message(Setup.city)
 async def save_city(message: types.Message, state: FSMContext):
     supabase.table("profiles").update({"city": message.text}).eq("id", message.from_user.id).execute()
-    await state.clear()
-    await message.answer(f"✅ Місто змінено на <b>{message.text}</b>", parse_mode="HTML")
+    await state.clear(); await message.answer(f"✅ Місто: {message.text}")
 
-# --- Лимиты ветра ---
 @dp.callback_query(F.data == "set_bike")
 async def edit_bike(call: types.CallbackQuery, state: FSMContext):
-    await state.set_state(Setup.bike)
-    await call.message.answer("🚲 Введіть ліміт вітру (м/с):")
-    await call.answer()
+    await state.set_state(Setup.bike); await call.message.answer("🚲 Ліміт вітру (м/с):"); await call.answer()
 
 @dp.message(Setup.bike)
 async def save_bike(message: types.Message, state: FSMContext):
     try:
         val = float(message.text.replace(",", "."))
         supabase.table("profiles").update({"bike_wind_limit": val}).eq("id", message.from_user.id).execute()
-        await state.clear()
-        await message.answer(f"✅ Вело-ліміт: {val} м/с")
-    except:
-        await message.answer("❌ Введіть число!")
+        await state.clear(); await message.answer(f"✅ Ліміт: {val} м/с")
+    except: await message.answer("❌ Число!")
 
-@dp.message(F.text == "🆘 Support")
-async def support(message: types.Message):
-    await message.answer("🆘 Зв'язок: @your_handle\nВідправте опис проблеми.")
-
+# --- ЗАПУСК ---
 async def handle(request): return web.Response(text="OK")
 async def main():
     app = web.Application()
